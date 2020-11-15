@@ -12,7 +12,7 @@ type
 var connections = newSeq[Pair]() 
 
 # Handles the start of a connection. This is a user asking for a name
-proc handle_connect(data:JsonNode, ws: WebSocket) {.async.} =
+proc handleUserConnect(data:JsonNode, ws: WebSocket) {.async.} =
     let name = data{"name"}.getStr() # decodes the name
     let free = not userTable.hasKey(name) # Checks if the name is free
 
@@ -27,7 +27,7 @@ proc handle_connect(data:JsonNode, ws: WebSocket) {.async.} =
     asyncCheck ws.send($returnData)
 
 # Handles an incoming message
-proc handle_message(data:JsonNode) {.async, gcsafe.} =
+proc handleUserMessage(data:JsonNode) {.async, gcsafe.} =
     let user:User = User.userTable[data["name"].getStr] # Get the user
     let currChannel:Channel = Channel.channels[user.currChannelName] # Get the current user's channel
 
@@ -67,9 +67,14 @@ proc joinChannel(channel:Channel, user:User) {.async, gcsafe.} =
     user.currChannelName = channel.name
 
 # data is expected to be {name, channel_name}
-proc handle_channel_change(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
+proc handleChangeChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     # Validate that we can change channels
     try:
+        # Make sure our json has the data we need
+        assert(data.hasKey("name"), "Json data incomplete. 'name' doesn't exist")
+        assert(data.hasKey("channel_name"), "Json data incomplete. 'channel_name' doesn't exist")
+
+        # Assemble the data we need
         let nextChannel = Channel.channels.getOrDefault(data["channel_name"].getStr)
         let user = userTable[data["name"].getStr]
         let currChannel = Channel.channels.getOrDefault(user.currChannelName)
@@ -82,28 +87,33 @@ proc handle_channel_change(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
         if nextChannel == nil:
             raise newException(ChannelNoExist, "Channel trying to be joined doesn't exist")
 
+        # Get the next channel name
         let nextChannelName = if nextChannel == nil:
                                 ""
                             else:
                                 nextChannel.name
 
+        # If our current channel is the same as next channel, don't bother changing
         if user.currChannelName == nextChannelName:
             return
 
-        # Get the history and users from the next channel
+        # leave the current channel
         if currChannel != nil:
             await currChannel.leaveChannel(user)
 
+        # Join the next channel
         await nextChannel.joinChannel(user)
         
     except ChannelNoExist:
         echo "Major problem"
         echo getCurrentExceptionMsg()
+    except AssertionError:
+        echo getCurrentExceptionMsg()
 
 # Handles when a user is fully connected. This will send message history and user data 
 # to complete the process
 # data expected to be {action, name}
-proc handle_connected(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
+proc handleConnected(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     let message = connected()
     asyncCheck ws.send($message)
 
@@ -112,13 +122,13 @@ proc handle_connected(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
 
     let data = %* {"name": data["name"], "channel_name": START_CHANNEL}
 
-    await handle_channel_change(data, ws)
+    await handleChangeChannel(data, ws)
 
 
-proc handle_create_channel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
+proc handleCreateChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     let channelName = data["channel_name"].getStr
     if createChannel(channelName):
-        await handle_channel_change(%*{"channel_name": channelName, "name": data["name"].getStr}, ws)
+        await handleChangeChannel(%*{"channel_name": channelName, "name": data["name"].getStr}, ws)
 
 proc removeUser(ws:WebSocket) {.async.} =
     # let name = socketTable[ws.key] # Get the name
@@ -152,15 +162,15 @@ proc cb(req: Request) {.async, gcsafe.} =
 
                     case action:
                         of "request_name":
-                            await handle_connect(json, ws)
+                            await handleUserConnect(json, ws)
                         of "message":
-                            await handle_message(json)
+                            await handleUserMessage(json)
                         of "connected":
-                            await handle_connected(json, ws)
+                            await handleConnected(json, ws)
                         of "request_new_channel":
-                            await handle_create_channel(json, ws)
+                            await handleCreateChannel(json, ws)
                         of "switch_channel":
-                            await handle_channel_change(json, ws)
+                            await handleChangeChannel(json, ws)
                 except JsonParsingError:
                     echo "Parsing error on json"
 
