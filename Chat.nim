@@ -1,11 +1,15 @@
 import ws, asyncdispatch, asynchttpserver, json, tables, sequtils, sugar
-import Messages, Channel, User
+import Messages, Channel, User, utils
 
 const START_CHANNEL = "General"
 
+type
+    Pair = ref object
+        ws:WebSocket
+        name:string
+
 # simple sequence of sockets
-var connections = newSeq[WebSocket]() 
-var socketTable = newTable[string, string]()
+var connections = newSeq[Pair]() 
 
 # Handles the start of a connection. This is a user asking for a name
 proc handle_connect(data:JsonNode, ws: WebSocket) {.async.} =
@@ -35,6 +39,33 @@ proc handle_message(data:JsonNode) {.async, gcsafe.} =
         if other.ws.readyState == Open:
             asyncCheck other.ws.send($message)
 
+proc leaveChannel(channel:Channel, user:User) {.async, gcsafe.} =
+    # Simply remove our user from the current channel via filter
+        channel.users = channel.users.filter(u => u.name != user.name)
+        
+        # First notify all users of the current channel that we are leaving
+        let userLeft = Messages.userLeft(user.name)
+        for other in channel.users:
+            if other.ws.readyState == Open:
+                asyncCheck other.ws.send($userLeft)
+
+proc joinChannel(channel:Channel, user:User) {.async, gcsafe.} =
+    # Then notify all new users we are joining in the next channel
+    let userJoined = Messages.userJoined(user.name)
+    for other in channel.users:
+        if other.ws.readyState == Open:
+            asyncCheck other.ws.send($userJoined)
+
+    # Then add our user to the next channel
+    channel.users.add(user)
+    let (messageHistory, users) = channel.getChannelData()
+
+    let channelJoined = Messages.channelJoined(channel.name, messageHistory, users)
+    if user.ws.readyState == Open:
+        asyncCheck user.ws.send($channelJoined)
+
+    user.currChannelName = channel.name
+
 # data is expected to be {name, channel_name}
 proc handle_channel_change(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     # Validate that we can change channels
@@ -60,31 +91,10 @@ proc handle_channel_change(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
             return
 
         # Get the history and users from the next channel
-        if nextChannel != nil:
-            # Simply remove our user from the current channel via filter
-            nextChannel.users = nextChannel.users.filter(u => u.name != user.name)
-            
-            # First notify all users of the current channel that we are leaving
-            let userLeft = Messages.userLeft(user.name)
-            for other in nextChannel.users:
-                if other.ws.readyState == Open:
-                    asyncCheck other.ws.send($userLeft)
+        if currChannel != nil:
+            await currChannel.leaveChannel(user)
 
-        # Then notify all new users we are joining in the next channel
-        let userJoined = Messages.userJoined(user.name)
-        for other in nextChannel.users:
-            if other.ws.readyState == Open:
-                asyncCheck other.ws.send($userJoined)
-
-        # Then add our user to the next channel
-        nextChannel.users.add(user)
-        let (messageHistory, users) = Channel.changeChannel(user.name, nextChannelName, nextChannel.name)
-
-        let channelJoined = Messages.channelJoined(nextChannel.name, messageHistory, users)
-        if ws.readyState == Open:
-            asyncCheck ws.send($channelJoined)
-
-        user.currChannelName = nextChannel.name
+        await nextChannel.joinChannel(user)
         
     except ChannelNoExist:
         echo "Major problem"
@@ -98,7 +108,7 @@ proc handle_connected(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     asyncCheck ws.send($message)
 
     # Assign our name to the socket table
-    socketTable[ws.key] = data["name"].getStr
+    connections.add Pair(ws:ws, name:data["name"].getStr)
 
     let data = %* {"name": data["name"], "channel_name": START_CHANNEL}
 
@@ -110,13 +120,27 @@ proc handle_create_channel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     if createChannel(channelName):
         await handle_channel_change(%*{"channel_name": channelName, "name": data["name"].getStr}, ws)
 
+proc removeUser(ws:WebSocket) {.async.} =
+    # let name = socketTable[ws.key] # Get the name
+    let sockerUserPair = connections.first(x => x.ws == ws)
+    let user = User.userTable.getOrDefault(sockerUserPair.name, nil) # get the user
+
+    if user != nil:
+        let channel = Channel.channels[user.currChannelName] # Get the current channel
+        channel.users = channel.users.filter(u => u.name != sockerUserPair.name) # remove them from the channel
+
+    # socketTable.del name
+    connections = connections.filter(x => x.ws != ws)
+    User.userTable.del sockerUserPair.name
+
+    await channels[user.currChannelName].leaveChannel(user)
+    
+    echo "Removing " & sockerUserPair.name
+
 proc cb(req: Request) {.async, gcsafe.} =
     if req.url.path == "/ws/chat":
         var ws = await newWebSocket(req) # Await a new connection
         try:
-            connections.add ws # Add to the list
-            socketTable[ws.key] = ""
-            echo "key is " & ws.key
 
             while ws.readyState == Open:
                 let (opcode, data) = await ws.receivePacket()
@@ -140,24 +164,13 @@ proc cb(req: Request) {.async, gcsafe.} =
                 except JsonParsingError:
                     echo "Parsing error on json"
 
-                
         except WebSocketError:
             echo "socket closed:", getCurrentExceptionMsg()
-            let name = socketTable[ws.key] # Get the name
-            let user = User.userTable.getOrDefault(name, nil) # get the user
-            if user != nil:
-                let channel = Channel.channels[user.currChannelName] # Get the current channel
-                channel.users = channel.users.filter(u => u.name != name) # remove them from the channel
-
-            socketTable.del name
-            connections = connections.filter(s => s != ws)
-            User.userTable.del name
-            
-            echo "Removing " & name
+            await removeUser(ws)
     else:
         await req.respond(Http404, "Not found")
         
-        
+
 
 discard createChannel(START_CHANNEL) # Create our initial (and only for now) channel
 
