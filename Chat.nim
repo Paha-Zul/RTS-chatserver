@@ -73,6 +73,7 @@ proc handleChangeChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
         # Make sure our json has the data we need
         assert(data.hasKey("name"), "Json data incomplete. 'name' doesn't exist")
         assert(data.hasKey("channel_name"), "Json data incomplete. 'channel_name' doesn't exist")
+        assert(userTable.hasKey(data["name"].getStr), "User table does not contain user name '"&data["name"].getStr&"'")
 
         # Assemble the data we need
         let nextChannel = Channel.channels.getOrDefault(data["channel_name"].getStr)
@@ -130,22 +131,25 @@ proc handleCreateChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     if createChannel(channelName):
         await handleChangeChannel(%*{"channel_name": channelName, "name": data["name"].getStr}, ws)
 
-proc removeUser(ws:WebSocket) {.async.} =
+proc removeUser(ws:WebSocket) {.async, gcsafe.} =
     # let name = socketTable[ws.key] # Get the name
-    let sockerUserPair = connections.first(x => x.ws == ws)
-    let user = User.userTable.getOrDefault(sockerUserPair.name, nil) # get the user
+    let socketUserPair = connections.first(x => x.ws == ws)
+    assert(socketUserPair != nil, "The websocket disconnecting never fully connected")
+
+    let user = User.userTable.getOrDefault(socketUserPair.name, nil) # get the user
 
     if user != nil:
         let channel = Channel.channels[user.currChannelName] # Get the current channel
-        channel.users = channel.users.filter(u => u.name != sockerUserPair.name) # remove them from the channel
+        channel.users = channel.users.filter(u => u.name != socketUserPair.name) # remove them from the channel
+        await channels[user.currChannelName].leaveChannel(user)
+    else:
+        echo "User '"&socketUserPair.name&"' was not a real user"
 
     # socketTable.del name
     connections = connections.filter(x => x.ws != ws)
-    User.userTable.del sockerUserPair.name
-
-    await channels[user.currChannelName].leaveChannel(user)
+    User.userTable.del socketUserPair.name
     
-    echo "Removing " & sockerUserPair.name
+    echo "Removing " & socketUserPair.name
 
 proc cb(req: Request) {.async, gcsafe.} =
     if req.url.path == "/ws/chat":
@@ -176,7 +180,10 @@ proc cb(req: Request) {.async, gcsafe.} =
 
         except WebSocketError:
             echo "socket closed:", getCurrentExceptionMsg()
-            await removeUser(ws)
+            try:
+                await removeUser(ws)
+            except AssertionError:
+                echo getCurrentExceptionMsg()
     else:
         await req.respond(Http404, "Not found")
         
