@@ -10,14 +10,15 @@ type
         name*:string
         users*:seq[User]
         messages*:seq[string]
+        temp*:bool
 
 var channels*:TableRef[string, Channel] = newTable[string, Channel](32)
 
-proc createChannel*(name:string):bool = 
+proc createChannel*(name:string, temp:bool = false):bool = 
     if channels.hasKey(name):
         return false
 
-    let channel = Channel(id: 1, name: name, users: @[], messages: @[])
+    let channel = Channel(id: 1, name: name, users: @[], messages: @[], temp:temp)
     channels[name] = channel
 
     return true

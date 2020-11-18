@@ -1,4 +1,4 @@
-import ws, asyncdispatch, asynchttpserver, json, tables, sequtils, sugar
+import ws, asyncdispatch, asynchttpserver, json, tables, seqUtils, sugar
 import Messages, Channel, User, utils
 
 const START_CHANNEL = "General"
@@ -39,16 +39,26 @@ proc handleUserMessage(data:JsonNode) {.async, gcsafe.} =
         if other.ws.readyState == Open:
             asyncCheck other.ws.send($message)
 
+# Handles when a user leaves a channel
 proc leaveChannel(channel:Channel, user:User) {.async, gcsafe.} =
     # Simply remove our user from the current channel via filter
-        channel.users = channel.users.filter(u => u.name != user.name)
-        
-        # First notify all users of the current channel that we are leaving
-        let userLeft = Messages.userLeft(user.name)
+    channel.users = channel.users.filter(u => u.name != user.name)
+    
+    # First notify all users of the current channel that we are leaving
+    let userLeft = Messages.userLeft(user.name)
+
+    # If the channel is temporary and we have no users left, remove the channel
+    if channel.temp and channel.users.len <= 0:
+        echo "Channel has no users. Removing " & channel.name
+        channels.del channel.name
+    
+    # Otherwise send out to all users that someone left
+    else:
         for other in channel.users:
             if other.ws.readyState == Open:
                 asyncCheck other.ws.send($userLeft)
 
+# Handles joining a channel for a user
 proc joinChannel(channel:Channel, user:User) {.async, gcsafe.} =
     # Then notify all new users we are joining in the next channel
     let userJoined = Messages.userJoined(user.name)
@@ -100,7 +110,7 @@ proc handleChangeChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
 
         # leave the current channel
         if currChannel != nil:
-            await currChannel.leaveChannel(user)
+            await leaveChannel(currChannel, user)
 
         # Join the next channel
         await nextChannel.joinChannel(user)
@@ -119,16 +129,22 @@ proc handleConnected(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
     asyncCheck ws.send($message)
 
     # Assign our name to the socket table
-    connections.add Pair(ws:ws, name:data["name"].getStr)
+    connections.first(c => c.ws == ws).name = data["name"].getStr
+    # connections.add Pair(ws:ws, name:data["name"].getStr)
 
     let data = %* {"name": data["name"], "channel_name": START_CHANNEL}
 
     await handleChangeChannel(data, ws)
 
-
+# handles creating a channel on the server
 proc handleCreateChannel(data:JsonNode, ws:WebSocket) {.async, gcsafe.} =
+    assert(data.hasKey("channel_name")) # The channel name
+    assert(data.hasKey("name")) # The user name
+
     let channelName = data["channel_name"].getStr
-    if createChannel(channelName):
+    let temp = data["temp"].getBool
+    
+    if createChannel(channelName, temp):
         await handleChangeChannel(%*{"channel_name": channelName, "name": data["name"].getStr}, ws)
 
 proc removeUser(ws:WebSocket) {.async, gcsafe.} =
@@ -136,18 +152,23 @@ proc removeUser(ws:WebSocket) {.async, gcsafe.} =
     let socketUserPair = connections.first(x => x.ws == ws)
     assert(socketUserPair != nil, "The websocket disconnecting never fully connected")
 
-    let user = User.userTable.getOrDefault(socketUserPair.name, nil) # get the user
+    # Get the user by their websocket. This is more reliable (albeit more search intensive)
+    let user = seqUtils.toSeq(User.userTable.values).first(u => u.ws == ws)
+    # let user = User.userTable.getOrDefault(socketUserPair.name, nil) # get the user
 
     if user != nil:
-        let channel = Channel.channels[user.currChannelName] # Get the current channel
-        channel.users = channel.users.filter(u => u.name != socketUserPair.name) # remove them from the channel
-        await channels[user.currChannelName].leaveChannel(user)
+        let channel = Channel.channels.getOrDefault(user.currChannelName)
+        if channel != nil:
+            await leaveChannel(channel, user) # Remove the user from the channel
+        
+        # Delete from the user table
+        User.userTable.del user.name
     else:
         echo "User '"&socketUserPair.name&"' was not a real user"
 
     # socketTable.del name
     connections = connections.filter(x => x.ws != ws)
-    User.userTable.del socketUserPair.name
+    
     
     echo "Removing " & socketUserPair.name
 
@@ -155,7 +176,7 @@ proc cb(req: Request) {.async, gcsafe.} =
     if req.url.path == "/ws/chat":
         var ws = await newWebSocket(req) # Await a new connection
         try:
-
+            connections.add Pair(ws:ws, name:"")
             while ws.readyState == Open:
                 let (opcode, data) = await ws.receivePacket()
                 try:
