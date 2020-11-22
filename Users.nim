@@ -1,5 +1,5 @@
 import tables, ws, random, system, options, sequtils, sugar
-# import UserSocket
+# import WebSocket
 
 randomize()
 
@@ -13,8 +13,8 @@ type
     UserTable* = ref object
         users:TableRef[string, User]
 
-proc createUser*(name:string, socket:WebSocket):User = 
-    return User(id: rand(high(int)), name: name, ws: socket, currChannelName:"")
+proc createUser*(id:int64, name:string, socket:WebSocket):User = 
+    return User(id: id, name: name, ws: socket, currChannelName:"")
 
 proc createUserTable*():UserTable =
     return UserTable(users: newTable[string, User](64))
@@ -31,11 +31,12 @@ proc getUserBySocket*(table:UserTable, ws:WebSocket):Option[User] =
 
     return none(User)
 
-proc getUserFromTable*(table:UserTable, fun: (User) -> bool): Option[User] =
+proc getUser*(table:UserTable, fun: (User) -> bool): Option[User] =
     ## Get a user by an anonymous function. If getting a user by name, `getUserByName()` is greatly preferred
 
     for user in seqUtils.toSeq(table.users.values):
         if fun(user):
+            echo "We have found a good user"
             return some(user)
 
     return none(User)

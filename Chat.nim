@@ -1,4 +1,4 @@
-import ws, asyncdispatch, asynchttpserver, json, tables, seqUtils, sugar, times, os, options
+import ws, asyncdispatch, asynchttpserver, json, tables, seqUtils, sugar, times, os, options, random
 import Messages, Channel, Users, utils, ChatMessages
 
 const START_CHANNEL = "General"
@@ -18,7 +18,7 @@ type
 let context = Context(users: createUserTable(), messages: createChatMessageSeq(), channels: creatChannelTable())
 
 # Handles the start of a connection. This is a user asking for a name
-proc handleUserConnect(data:JsonNode, ws: WebSocket, context:Context) {.async.} =
+proc handleUserConnect(data:JsonNode, ws: WebSocket, connId:int64, context:Context) {.async.} =
     assert(data.hasKey("name"))
 
     let name = data{"name"}.getStr() # decodes the name
@@ -36,7 +36,7 @@ proc handleUserConnect(data:JsonNode, ws: WebSocket, context:Context) {.async.} 
     asyncCheck ws.send($returnData)
 
 # Handles an incoming message
-proc handleUserMessage(data:JsonNode, ws:WebSocket, context:Context) {.async, gcsafe.} =
+proc handleUserMessage(data:JsonNode, ws:WebSocket, connId:int64, context:Context) {.async, gcsafe.} =
     assert(data.hasKey("name"))
     assert(data.hasKey("message"))
 
@@ -101,7 +101,7 @@ proc joinChannel(channel:Channel, user:User, context:Context) {.async, gcsafe.} 
     user.currChannelName = channel.name
 
 # data is expected to be {name, channel_name}
-proc handleChangeChannel(data:JsonNode, ws:WebSocket, context:Context) {.async, gcsafe.} =
+proc handleChangeChannel(data:JsonNode, ws:WebSocket, connId:int64, context:Context) {.async, gcsafe.} =
     # Validate that we can change channels
     try:
         # Make sure our json has the data we need
@@ -154,7 +154,7 @@ proc handleChangeChannel(data:JsonNode, ws:WebSocket, context:Context) {.async, 
 # Handles when a user is fully connected. This will send message history and user data 
 # to complete the process
 # data expected to be {action, name}
-proc handleConnected(data:JsonNode, ws:WebSocket, context:Context) {.async, gcsafe.} =
+proc handleConnected(data:JsonNode, ws:WebSocket, connId:int64, context:Context) {.async, gcsafe.} =
     assert(data.hasKey("name"))
 
     let message = connected()
@@ -162,16 +162,16 @@ proc handleConnected(data:JsonNode, ws:WebSocket, context:Context) {.async, gcsa
 
     # Make sure someone didn't connect before us with the same name
     if not context.users.hasUser(data["name"].getStr):
-        # let socket =  UserSocket(ws:ws, id:range(high(int)))
-        let user = createUser(data["name"].getStr, ws)
+        # let socket =  UserSocket(ws:ws, id:rand(high(int)))
+        let user = createUser(connId, data["name"].getStr, ws)
         context.users.addUserToTable(user)
 
         let data = %* {"name": data["name"], "channel_name": START_CHANNEL}
 
-        await handleChangeChannel(data, ws, context)
+        await handleChangeChannel(data, ws, connId, context)
 
 # handles creating a channel on the server
-proc handleCreateChannel(data:JsonNode, ws:WebSocket, context:Context) {.async, gcsafe.} =
+proc handleCreateChannel(data:JsonNode, ws:WebSocket, connId:int64, context:Context) {.async, gcsafe.} =
     assert(data.hasKey("channel_name")) # The channel name
     assert(data.hasKey("name")) # The user name
 
@@ -179,13 +179,12 @@ proc handleCreateChannel(data:JsonNode, ws:WebSocket, context:Context) {.async, 
     let temp = data["temp"].getBool
     
     if context.channels.createChannel(channelName, temp).isSome:
-        await handleChangeChannel(%*{"channel_name": channelName, "name": data["name"].getStr}, ws, context)
+        await handleChangeChannel(%*{"channel_name": channelName, "name": data["name"].getStr}, ws, connId, context)
 
-proc removeUser(ws:WebSocket, context:Context) {.async, gcsafe.} =
+proc removeUser(ws:WebSocket, connId:int64, context:Context) {.async, gcsafe.} =
     # let name = socketTable[ws.key] # Get the name
-    let user = context.users.getUserBySocket(ws)
-    echo "How many users do we have? " & $context.users.getUsers().len
-    assert(user.isNone, "The websocket disconnecting never fully connected")
+    let user = context.users.getUser(u => u.id == connId)
+    assert(user.isSome, "The websocket disconnecting never fully connected")
 
     if user.isSome:
         let user = user.get
@@ -204,6 +203,8 @@ proc removeUser(ws:WebSocket, context:Context) {.async, gcsafe.} =
 proc cb(req: Request) {.async, gcsafe.} =
     if req.url.path == "/ws/chat":
         var ws = await newWebSocket(req) # Await a new connection
+        let connId = rand(high(int)) # make a connection Id for the specific connection
+
         try:
             while ws.readyState == Open:
                 let (opcode, data) = await ws.receivePacket()
@@ -215,22 +216,22 @@ proc cb(req: Request) {.async, gcsafe.} =
 
                     case action:
                         of "request_name":
-                            await handleUserConnect(json, ws, context)
+                            await handleUserConnect(json, ws, connId, context)
                         of "message":
-                            await handleUserMessage(json, ws, context)
+                            await handleUserMessage(json, ws, connId, context)
                         of "connected":
-                            await handleConnected(json, ws, context)
+                            await handleConnected(json, ws, connId, context)
                         of "request_new_channel":
-                            await handleCreateChannel(json, ws, context)
+                            await handleCreateChannel(json, ws, connId, context)
                         of "switch_channel":
-                            await handleChangeChannel(json, ws, context)
+                            await handleChangeChannel(json, ws, connId, context)
                 except JsonParsingError:
                     echo "Parsing error on json"
 
         except WebSocketError:
             echo "socket closed:", getCurrentExceptionMsg()
             try:
-                await removeUser(ws, context)
+                await removeUser(ws, connId, context)
             except AssertionError:
                 echo getCurrentExceptionMsg()
     else:
