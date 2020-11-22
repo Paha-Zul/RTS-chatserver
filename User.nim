@@ -9,6 +9,9 @@ type
         ws*:WebSocket
         currChannelName*:string
 
+    UserTable* = ref object
+        users:TableRef[string, User]
+
 # A table mapping *user name* to a *user object*
 var userTable*: TableRef[string, User] = newTable[string, User](64) 
 

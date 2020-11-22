@@ -1,5 +1,5 @@
-import ws, asyncdispatch, asynchttpserver, json, tables, seqUtils, sugar
-import Messages, Channel, User, utils
+import ws, asyncdispatch, asynchttpserver, json, tables, seqUtils, sugar, times, os
+import Messages, Channel, User, utils, ChatMessage
 
 const START_CHANNEL = "General"
 
@@ -7,6 +7,12 @@ type
     Pair = ref object
         ws:WebSocket
         name:string
+
+    # Context to pass to all of our functions to help not use global scoped variables
+    Context = ref object
+        users: UserTable
+        messages: ChatMessageSeq
+        channels: ChannelTable
 
 # simple sequence of sockets
 var connections = newSeq[Pair]() 
@@ -30,6 +36,8 @@ proc handleUserConnect(data:JsonNode, ws: WebSocket) {.async.} =
 proc handleUserMessage(data:JsonNode) {.async, gcsafe.} =
     let user:User = User.userTable[data["name"].getStr] # Get the user
     let currChannel:Channel = Channel.channels[user.currChannelName] # Get the current user's channel
+
+    let m = createChatMessage(user.name, data["message"].getStr, now().utc.format("yyyy-MM-dd:hh:mm:ss"))
 
     let message = chatMessage(data["name"].getStr, data["message"].getStr) # Creates the message
     currChannel.messages.add $message # Adds the message to the current channel

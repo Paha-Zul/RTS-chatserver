@@ -12,6 +12,9 @@ type
         messages*:seq[string]
         temp*:bool
 
+    ChannelTable* = ref object
+        channels:TableRef[string, Channel]
+
 var channels*:TableRef[string, Channel] = newTable[string, Channel](32)
 
 proc createChannel*(name:string, temp:bool = false):bool = 
