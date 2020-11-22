@@ -17,6 +17,9 @@ type
 
 var channels*:TableRef[string, Channel] = newTable[string, Channel](32)
 
+proc creatChannelTable*():ChannelTable = 
+    return ChannelTable(channels: newTable[string, Channel](16))
+
 proc createChannel*(name:string, temp:bool = false):bool = 
     if channels.hasKey(name):
         return false

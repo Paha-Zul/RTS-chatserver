@@ -15,6 +15,7 @@ type
         channels: ChannelTable
 
 # simple sequence of sockets
+var context = Context(users: createUserTable(), messages: createChatMessageSeq(), channels: creatChannelTable())
 var connections = newSeq[Pair]() 
 
 # Handles the start of a connection. This is a user asking for a name
