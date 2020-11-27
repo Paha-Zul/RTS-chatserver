@@ -16,6 +16,14 @@ type
     ChannelTable* = ref object
         channels:TableRef[string, Channel]
 
+    ## json-friendly data scheme for transmitting over network calls
+    ChannelData* = ref object
+        id:int64
+        name:string
+        users:seq[string]
+        messages:ChatMessageSeq
+        temp*:bool
+
 proc creatChannelTable*():ChannelTable = 
     return ChannelTable(channels: newTable[string, Channel](16))
 
@@ -75,3 +83,16 @@ func getUserFromChannel*(channel:Channel, fun: (User) -> bool): Option[User] =
 
 func getUsers*(channel:Channel):seq[User] =
     return channel.users
+
+func getChannelDataList*(channels:ChannelTable):seq[ChannelData] =
+    var channelData:seq[ChannelData] = @[]
+    for channel in seqUtils.toSeq(channels.channels.values):
+        channelData.add ChannelData(
+            id:channel.id,
+            name:channel.name,
+            users:channel.getUsers.map(u => u.name),
+            messages:channel.messages,
+            temp:channel.temp,
+        )
+    
+    return channelData

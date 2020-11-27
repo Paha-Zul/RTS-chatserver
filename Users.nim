@@ -25,7 +25,7 @@ proc getUserByName*(table:UserTable, name:string):Option[User] =
     return none(User)
 
 proc getUserBySocket*(table:UserTable, ws:WebSocket):Option[User] = 
-    for user in seqUtils.toSeq(table.users.values):
+    for user in table.users.values:
         if user.ws == ws:
             return some(user)
 
