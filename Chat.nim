@@ -204,6 +204,7 @@ proc cb(req: Request) {.async, gcsafe.} =
     if req.url.path == "/ws/chat":
         var ws = await newWebSocket(req) # Await a new connection
         let connId = rand(high(int)) # make a connection Id for the specific connection
+        echo "New websocket connection"
 
         try:
             while ws.readyState == Open:
@@ -234,6 +235,12 @@ proc cb(req: Request) {.async, gcsafe.} =
                 await removeUser(ws, connId, context)
             except AssertionError:
                 echo getCurrentExceptionMsg()
+
+    elif req.url.path == "/ws/health":
+        var message = "Current number of chat channels: " & $context.channels.getChannelDataList().len
+        message = message & "\n Current number of users connected: " & $context.users.getUsers().len
+        await req.respond(Http200, message)
+
     else:
         await req.respond(Http404, "Not found")
         
